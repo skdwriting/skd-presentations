@@ -1,0 +1,127 @@
+# One may have a look at http://docs.travis-ci.com/user/installing-dependencies/
+
+language: c
+
+notifications:
+  - email: true
+
+sudo: false
+
+cache: ccache
+
+before_install:
+  # Install the cross compilers
+  - wget http://releases.linaro.org/15.02/components/toolchain/binaries/arm-linux-gnueabihf/gcc-linaro-4.9-2015.02-3-x86_64_arm-linux-gnueabihf.tar.xz
+  - tar xf gcc-linaro-4.9-2015.02-3-x86_64_arm-linux-gnueabihf.tar.xz
+  - export PATH=${PWD}/gcc-linaro-4.9-2015.02-3-x86_64_arm-linux-gnueabihf/bin:${PATH}
+  - arm-linux-gnueabihf-gcc --version
+  - wget http://releases.linaro.org/15.02/components/toolchain/binaries/aarch64-linux-gnu/gcc-linaro-4.9-2015.02-3-x86_64_aarch64-linux-gnu.tar.xz
+  - tar xf gcc-linaro-4.9-2015.02-3-x86_64_aarch64-linux-gnu.tar.xz
+  - export PATH=${PWD}/gcc-linaro-4.9-2015.02-3-x86_64_aarch64-linux-gnu/bin:${PATH}
+  - aarch64-linux-gnu-gcc --version
+
+before_script:
+  # Store the home repository
+  - export MYHOME=$PWD
+
+  # Download checkpatch.pl
+  - export DST_KERNEL=$PWD/linux && mkdir -p $DST_KERNEL/scripts && cd $DST_KERNEL/scripts
+  - wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/checkpatch.pl && chmod a+x checkpatch.pl
+  - wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/spelling.txt
+  - cd $MYHOME
+
+  # Tools required for QEMU tests
+  # 'apt-get install' cannot be used in the new container-based infrastructure
+  # (which is the only allowing caching), so we just build from sources
+  # bc is used during kernel configuration
+  - cd $HOME
+  - wget http://ftp.gnu.org/gnu/bc/bc-1.06.tar.gz
+  - tar xf bc-1.06.tar.gz
+  - (cd bc-1.06 && CC="ccache gcc" ./configure --quiet && make -j4)
+  - export PATH=${HOME}/bc-1.06/bc:$PATH
+  # Tcl/Expect
+  - wget http://prdownloads.sourceforge.net/tcl/tcl8.6.4-src.tar.gz
+  - tar xf tcl8.6.4-src.tar.gz
+  - (cd tcl8.6.4/unix && ./configure --quiet --prefix=${HOME}/inst CC="ccache gcc" && make -j4 install)
+  - wget http://sourceforge.net/projects/expect/files/Expect/5.45/expect5.45.tar.gz/download -O expect5.45.tar.gz
+  - tar xf expect5.45.tar.gz
+  - (cd expect5.45 && ./configure --quiet --with-tcl=${HOME}/inst/lib --prefix=${HOME}/inst CC="ccache gcc" && make -j4 expect && make -j4 install)
+  - export PATH=$HOME/inst/bin:$PATH
+  # pycrypto 2.6.1 or later has Crypto.Signature, 2.4.1 does not. It is needed to sign the test TAs.
+  - pip install --upgrade --user pycrypto
+  # Clone repositories for the QEMU test environment
+  - mkdir $HOME/bin
+  - (cd $HOME/bin && wget https://storage.googleapis.com/git-repo-downloads/repo && chmod +x repo)
+  - export PATH=$HOME/bin:$PATH
+  - mkdir $HOME/optee_repo
+  - (cd $HOME/optee_repo && repo init -u https://github.com/OP-TEE/manifest.git </dev/null && repo sync --no-clone-bundle --no-tags --quiet -j 2)
+  - (cd $HOME/optee_repo/qemu && git submodule update --init dtc)
+  - (cd $HOME/optee_repo && mv optee_os optee_os_old && ln -s $MYHOME optee_os)
+  - cd $MYHOME
+
+# Several compilation options are checked
+script:
+  # Run checkpatch.pl
+  - git format-patch -1 --stdout | $DST_KERNEL/scripts/checkpatch.pl --ignore FILE_PATH_CHANGES --ignore GERRIT_CHANGE_ID --no-tree -
+
+  # Orly2
+  -                                  PLATFORM=stm-orly2                                  CROSS_COMPILE=arm-linux-gnueabihf-  make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=stm                PLATFORM_FLAVOR=orly2   CROSS_COMPILE=arm-linux-gnueabihf-  make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=stm                PLATFORM_FLAVOR=orly2   CROSS_COMPILE=arm-linux-gnueabihf-  make -j8 all -s
+
+  # Cannes
+  -                                  PLATFORM=stm-cannes                                 CROSS_COMPILE=arm-linux-gnueabihf-  make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=stm                PLATFORM_FLAVOR=cannes  CROSS_COMPILE=arm-linux-gnueabihf-  make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=stm                PLATFORM_FLAVOR=cannes  CROSS_COMPILE=arm-linux-gnueabihf-  make -j8 all -s
+
+  # FVP
+  -                                  PLATFORM=vexpress-fvp       CFG_ARM32_core=y   CROSS_COMPILE_core=arm-linux-gnueabihf- make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress-fvp       CFG_ARM32_core=y   CROSS_COMPILE_core=arm-linux-gnueabihf- make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=vexpress-fvp       CFG_ARM32_core=y   CROSS_COMPILE_core=arm-linux-gnueabihf- make -j8 all -s
+  -                                  PLATFORM=vexpress-fvp       CFG_ARM64_core=y   CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress-fvp       CFG_ARM64_core=y   CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=vexpress-fvp       CFG_ARM64_core=y   CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+
+  # Juno
+  -                                  PLATFORM=vexpress-juno      CFG_ARM32_core=y   CROSS_COMPILE_core=arm-linux-gnueabihf- make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress-juno      CFG_ARM32_core=y   CROSS_COMPILE_core=arm-linux-gnueabihf- make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=vexpress-juno      CFG_ARM32_core=y   CROSS_COMPILE_core=arm-linux-gnueabihf- make -j8 all -s
+  -                                  PLATFORM=vexpress-juno      CFG_ARM64_core=y   CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress-juno      CFG_ARM64_core=y   CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=vexpress-juno      CFG_ARM64_core=y   CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+
+  # QEMU
+  -                                  PLATFORM=vexpress-qemu                                                                make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress           PLATFORM_FLAVOR=qemu                                      make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=vexpress           PLATFORM_FLAVOR=qemu                                      make -j8 all -s
+
+  # QEMU-virt
+  -                                  PLATFORM=vexpress-qemu_virt                                                           make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress           PLATFORM_FLAVOR=qemu_virt                                 make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=vexpress           PLATFORM_FLAVOR=qemu_virt CFG_TEE_CORE_DEBUG=1            make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=vexpress           PLATFORM_FLAVOR=qemu_virt                                 make -j8 all -s
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO_{AES,DES}=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO_{DSA,RSA,DH}=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO_{DSA,RSA,DH,ECC}=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO_{H,C,CBC_}MAC=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO_{G,C}CM=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_CRYPTO_{MD5,SHA{1,224,256,384,512}}=n
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_WITH_PAGER=y
+  - make -j8 all -s PLATFORM=vexpress-qemu_virt CFG_ENC_FS=n
+
+  # SUNXI(Allwinner A80)
+  - CFG_TEE_CORE_LOG_LEVEL=4 DEBUG=1 PLATFORM=sunxi make -j8 all -s
+  - CFG_TEE_CORE_LOG_LEVEL=0 DEBUG=0 PLATFORM=sunxi make -j8 all -s
+
+  # HiKey board (HiSilicon Kirin 620)
+  - make -j8 -s PLATFORM=hikey
+
+  # Mediatek mt8173 EVB
+  - PLATFORM=mediatek  PLATFORM_FLAVOR=mt8173  CFG_ARM64_core=y  CROSS_COMPILE_core=aarch64-linux-gnu-   make -j8 all -s
+
+  # Texas Instruments dra7xx
+  - PLATFORM=ti  PLATFORM_FLAVOR=dra7xx  make -j8 all -s
+
+  # Run regression tests (xtest in QEMU)
+  - (cd ${HOME}/optee_repo/build && make -s -j8 check CROSS_COMPILE="ccache arm-linux-gnueabihf-" DUMP_LOGS_ON_ERROR=1)
